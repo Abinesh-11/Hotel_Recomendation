@@ -68,7 +68,7 @@ hybrid_model.eval()
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-data = pd.read_csv("hotels_10000.csv", encoding='latin-1')
+data = pd.read_csv("hotels_20000.csv", encoding='latin-1')
 
 label_encoder = LabelEncoder()
 
