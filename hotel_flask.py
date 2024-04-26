@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import spacy
 import pandas as pd
+import numpy as np
 from sklearn.preprocessing import LabelEncoder
 import json
 from queue import Queue
@@ -13,18 +14,18 @@ import asyncio
 with open('vocab.json', 'r') as f:
     vocab = json.load(f)
 
-# spacy.cli.download("en_core_web_lg")
+# spacy.cli.download("en_core_web_sm")
 nlp = spacy.load("en_core_web_sm")
 
 class HybridHotelModel(nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, num_layers, bidirectional, pretrained_embeddings=None):
         super(HybridHotelModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        
+
         if pretrained_embeddings is not None:
             self.embedding.weight = nn.Parameter(pretrained_embeddings)
             self.embedding.weight.requires_grad = True  # Allow embeddings to be trainable
-        
+
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, num_layers=num_layers,
                             batch_first=True, bidirectional=bidirectional, dropout=0.5 if num_layers > 1 else 0)
         self.dropout = nn.Dropout(0.5)
@@ -36,7 +37,7 @@ class HybridHotelModel(nn.Module):
     def forward(self, x):
         embedded = self.embedding(x)
         lstm_output, (lstm_hidden, _) = self.lstm(embedded)
-        
+
         # Concatenate forward and backward hidden states if bidirectional
         if lstm_hidden.shape[0] > 1:
             lstm_hidden = torch.cat((lstm_hidden[-2,:,:], lstm_hidden[-1,:,:]), dim=1)
@@ -48,14 +49,14 @@ class HybridHotelModel(nn.Module):
         out = self.fc(lstm_hidden)
         out = self.softmax(out)  # Apply softmax activation to get class probabilities
         return out
-    
+
 vocab_size = len(vocab)
 embedding_dim = 250
 hidden_dim = 256
 output_dim = 6  # Adjust this according to the number of classes in your multi-class classification task
 num_layers = 2
 bidirectional = True
-pretrained_embeddings = None 
+pretrained_embeddings = None
 max_seq_length = 100 # You can load pretrained embeddings here if desired
 
 # Initializing the hybrid model with specified hyperparameters
@@ -75,7 +76,6 @@ label_encoder = LabelEncoder()
 data[' HotelRating'] = label_encoder.fit_transform(data[' HotelRating'])
 
 rating_mapping = {index: label for index, label in enumerate(label_encoder.classes_)}
-print("Encoded ratings mapping:", rating_mapping)
 
 custom_mapping = {'All': 0, 'OneStar': 1, 'TwoStar': 2, 'ThreeStar': 3, 'FourStar': 4, 'FiveStar': 5}
 
@@ -94,15 +94,24 @@ app = Flask(__name__)
 # Define route for home page
 @app.route('/')
 async def home():
-    return await asyncio.to_thread(render_template, 'indexes.html')
+    # Get unique city names from the dataset
+    unique_city_names = data[' countyName'].unique().tolist()
+    return await asyncio.to_thread(render_template, 'indexes.html', cityNames=unique_city_names)
 
 # Define a function to perform prediction asynchronously
 def predict_async(model, new_text, vocab, reverse_mapping, device, result_queue):
     # Tokenize the new text
     new_text_tokens = tokenize_new_text(new_text)
 
-    # Map tokens to numerical indices based on the vocabulary
-    numerical_sequence = [vocab[token] for token in new_text_tokens]
+    # Extract location information (for example, using spaCy)
+    doc = nlp(new_text)
+    locations = [ent.text for ent in doc.ents if ent.label_ == 'GPE']  # Extract locations
+
+    # Combine tokens and location information for prediction
+    tokens_with_location = new_text_tokens + locations
+
+    # Map tokens with location to numerical indices based on the vocabulary
+    numerical_sequence = [vocab[token] for token in tokens_with_location if token in vocab]
 
     # Pad or truncate the numerical sequence
     padded_sequence = numerical_sequence + [0] * (max_seq_length - len(numerical_sequence))
@@ -118,17 +127,35 @@ def predict_async(model, new_text, vocab, reverse_mapping, device, result_queue)
     # Decode the predicted class to obtain the rating label
     predicted_rating = reverse_mapping[predicted_class.item()]
 
+    # Filter hotels based on predicted rating and extracted locations if locations are present
+    if locations:
+        filtered_hotels = data[(data[' HotelRating'] == custom_mapping[predicted_rating]) & data[' countyName'].isin(locations)]
+    else:
+        filtered_hotels = data[data[' HotelRating'] == custom_mapping[predicted_rating]]
+
+    # Select random hotels from the filtered dataset
+    selected_hotels = np.random.choice(filtered_hotels[' HotelName'], size=min(5, len(filtered_hotels)), replace=False)
+
     # Put the result in the queue
-    result_queue.put(predicted_rating)
+    result_queue.put((predicted_rating, selected_hotels.tolist()))
 
 # Define route for prediction
 @app.route('/predict', methods=['POST'])
 async def predict():
-    # Get new text from request data
+    # Get new text and selected city from request data
     request_data = request.get_json()
-    if request_data is None or 'text' not in request_data:
-        return jsonify({"error": "Invalid request data"}), 400
-    new_text = request_data['text']
+    if request_data is None:
+        return jsonify({"error": "No request data provided"}), 400
+
+    # Extract text and city from the request data and check if they are not empty
+    new_text = request_data.get('text', '').strip()
+    city = request_data.get('city', '').strip()
+
+    # Validate the inputs
+    if not new_text or not city:
+        return jsonify({"error": "Please enter both text and a city"}), 400
+
+    new_text = new_text + ' ' + city
 
     # Create a queue to pass the result back from the prediction thread
     result_queue = Queue()
@@ -142,9 +169,17 @@ async def predict():
     if prediction_thread.is_alive():
         return jsonify({"error": "Prediction timed out"}), 500
     else:
-        predicted_rating = result_queue.get()
-        return jsonify({"response": f'Based on your requests the best rated hotels will start from this {predicted_rating} rating and the price will be negotiable as for your request'})
-    
+        predicted_rating, selected_hotels = result_queue.get()
+
+        if len(selected_hotels) == 0:
+            return jsonify({"response": "No hotels found for the predicted rating."})
+
+        return jsonify({
+            "response": f"Based on your requests, the best rated hotels start from this {predicted_rating} rating.",
+            "hotellist": selected_hotels
+        })
+
+
 # Run the Flask app
 if __name__ == '__main__':
     app.run(debug=True)

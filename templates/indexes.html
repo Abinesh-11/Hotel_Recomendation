@@ -3,41 +3,70 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hotel Rating Prediction</title>
+    <title>Hotel Recommendation System</title>
     <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" integrity="sha384-JcKb8q3iqJ61gNV9KGb8thSsNjpSL0n8PARn9HuZOnIxN0hoP+VmmDGMN5t9UJ0Z" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
 </head>
 <body>
-    <h1>Hotel Rating Prediction</h1>
+    <h1>Hotel Recommendation System</h1>
     <form id="prediction-form">
         <div class="form-group">
-            <label for="text">Enter your review:</label>
-            <textarea class="form-control" id="text" name="text" rows="4" cols="50"></textarea>
+            <label for="text">Enter what you are looking for:</label>
+            <textarea class="form-control" id="text" name="text" rows="4" cols="50" required></textarea>
+        </div>
+        <div class="form-group">
+            <label for="city">Select a city:</label>
+            <select class="form-control" id="city" name="city" required>
+                <option value="">Select a city...</option>
+                {% for city in cityNames %}
+                <option value="{{ city }}">{{ city }}</option>
+                {% endfor %}
+            </select>
         </div>
         <button type="submit" class="btn btn-primary">Predict</button>
     </form>
     <div id="prediction-result"></div>
-    
-    <!-- Bootstrap JS (optional, but required if you're using Bootstrap JS components) -->
-    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js" integrity="sha384-DfXdz2htPH0lsSSs5nCTpuj/zy4C+OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js" integrity="sha384-ayljemwaQkV08an+it+60HJy3a/fFF9/K8B6ngdv4Uydjgaq8++j6eKpRX6L2cF5" crossorigin="anonymous"></script>
-    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js" integrity="sha384-B4gt1jrGC7Jh4AgTPSdUtOBvfO8shCk+5E8e1pC6O5JHb8IVjDDdaBn6aX3O1I2n" crossorigin="anonymous"></script>
-    
+
+    <!-- Bootstrap JS, including jQuery and Popper -->
+    <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.4/dist/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
+
     <script>
         document.getElementById('prediction-form').addEventListener('submit', async function(event) {
             event.preventDefault();
             const formData = new FormData(this);
+            const text = formData.get('text').trim();
+            const city = formData.get('city').trim();
+
+            if (!text || !city) {
+                document.getElementById('prediction-result').innerHTML = '<p>Please enter both a description and select a city.</p>';
+                return;
+            }
+
             const response = await fetch('/predict', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    text: formData.get('text')
-                })
+                body: JSON.stringify({ text: text, city: city })
             });
+
             const data = await response.json();
-            document.getElementById('prediction-result').innerText = `Predicted recommendation: ${data.response}`;
+            let resultHtml = `<p>${data.response}</p>`;
+
+            if (data.hotellist && data.hotellist.length > 0) {
+                let tableHTML = '<table class="table"><thead><tr><th>#</th><th>Hotel Name</th></tr></thead><tbody>';
+                data.hotellist.forEach(function(hotel, index) {
+                    tableHTML += `<tr><td>${index + 1}</td><td>${hotel}</td></tr>`;
+                });
+                tableHTML += '</tbody></table>';
+                resultHtml += tableHTML;
+            } else if (!data.hotellist || data.hotellist.length === 0) {
+                resultHtml += '<p>No hotels found for this rating.</p>';
+            }
+
+            document.getElementById('prediction-result').innerHTML = resultHtml;
         });
     </script>
 </body>
